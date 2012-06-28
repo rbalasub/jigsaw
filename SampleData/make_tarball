@@ -1,0 +1,1 @@
+tar -czvf block_lda.tgz README SampleData/yeast.*  Makefile src/config.* src/corpus.* src/link_lda.cpp src/links.* src/model.* src/options.* src/stats.* src/util.* src/hungarian.c python/BeautifulSoup.py python/tokenize.py python/view_model.py src/hungarian.h 

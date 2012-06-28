@@ -1,0 +1,55 @@
+Block LDA (see http://www.cs.cmu.edu/~rbalasub/publications/sdm_2011.pdf for what this program tries to do)
+It also includes some regularization stuff that's brand-new and can be ignored for now.
+
+Author:Ramnath Balasubramanyan (rbalasub@cs.cmu.edu)
+
+INSTALLATION
+-------------
+1. Unzip the tarball (which you probably did already given that you are reading this README :)
+2. Install dlib
+3. Change path to dlib in the Makefile
+4. mkdir lib bin
+5. make
+
+HOW TO RUN
+-----------
+
+For running block lda in the most basic mode, you need to supply a train file with the network edges and/or a document corpus
+
+A sample run for the program is
+
+bin/link_lda        --link_train_file SampleData/yeast.ppi \
+                    --train_file SampleData/yeast.pubs     \
+                    --topics 8                             \
+                    --output_prefix BlockLDA-Output/yeast  \
+                    --link_attrs 1,1                       \
+                    --num_entity_types 3   
+
+The first two lines specify the corpus and network to train on. 
+The link_attrs flag indicates that links in the network are between proteins which in the document corpus is field #1 (0-based)
+The last flag tells the program that there are three types of attributes in the corpus - words, proteins and authors
+
+A report of the run will be saved in yeast-output-models.report
+yeast-output-models.* in general has a whole bunch of output most of which should be easily interpretable from the file names
+
+
+bin/link_lda --help will give you some info on how to specify other configuration values.
+
+
+VISUALIZATION
+--------------
+  python/view_model.py    --report=BlockLDA-Output/yeast.report      \
+                          --entity_names='words,proteins,authors'    \
+                          --dict_prefix=SampleData/yeast.dict        \
+                          --output_prefix=BlockLDA-Output/HTML/yeast \
+                          --index                                    \
+                          --topics                                   \
+                          --title "Yeast"
+
+
+ Navigate to  BlockLDA-Output/HTML/yeast_index.html on a browswer to see topics.
+
+WARNING
+---------
+This code is very much a work in progress and is very non-author-unfriendly.
+Please email me if you have any problems running it. Also please don't distribute it to anyone else just yet. I plan to clean it up and release it publicly soon.
