@@ -159,7 +159,7 @@ class Tokenizer:
         continue
       if self.stopwords.get(word, 0) != 0:
         continue
-      if re.search('[A-Za-z]', word) == None:
+      if self.process == 1 and re.search('[A-Za-z]', word) == None:
         continue
       sel_words.append(word)
     return sel_words, orig_words

@@ -1,6 +1,8 @@
 #ifndef __UTIL_H__
 #define __UTIL_H__
 
+#include <cmath>
+#include <map>
 #include <numeric>
 #include <string>
 #include <sstream>

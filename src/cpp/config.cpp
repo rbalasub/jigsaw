@@ -20,15 +20,19 @@ void Config::Help() {
 }
 
 void Config::Dump(ostream &os) {
-  ostringstream voc_str, ent_str, beta_str;
+  ostringstream voc_str, ent_str, beta_str, mixed_flag_str, mixed_var_str;
   for (int i = 0; i < n_entity_types_; ++i) {
     voc_str << vocab_size_[i];
     ent_str << entity_weight_[i];
     beta_str << beta_[i];
+    mixed_flag_str << mixedness_per_type_flags_[i];
+    mixed_var_str << mixedness_variance_per_type_[i];
     if (i != n_entity_types_ - 1) {
       voc_str << ',';
       ent_str << ',';
       beta_str << ',';
+      mixed_flag_str << ',';
+      mixed_var_str << ',';
     }
   }
   ostringstream md_split_str;
@@ -51,6 +55,8 @@ void Config::Dump(ostream &os) {
   all_options_["vocab_sizes"] = voc_str.str();
   all_options_["entity_weights"] = ent_str.str();
   all_options_["link_attrs"] = link_attr_str.str();
+  all_options_["mixed_penalty_per_flag"] = mixed_flag_str.str();
+  all_options_["mixed_variance_per_flag"] = mixed_var_str.str();
 
   MakePathAbsolute(all_options_["output_prefix"]);
   MakePathAbsolute(all_options_["input_model_file"]);
@@ -60,6 +66,8 @@ void Config::Dump(ostream &os) {
   MakePathAbsolute(all_options_["link_train_file"]);
   MakePathAbsolute(all_options_["node_label_file"]);
   MakePathAbsolute(all_options_["true_label_file"]);
+  MakePathAbsolute(all_options_["train_docs_label_file"]);
+  MakePathAbsolute(all_options_["doc_label_file"]);
   for (vector<string>::iterator i = order_.begin(); i != order_.end(); ++i)
     if (all_options_.count(*i))
       os << *i << '=' << all_options_[*i]<< endl;
@@ -166,7 +174,7 @@ void SplitString(string &str, T *vec, int max, T def) {
     while (iss && cnt < max) {
       string next_val;
       getline(iss, next_val, ',');
-      vec[cnt] = atoi(next_val.c_str());
+      vec[cnt] = atof(next_val.c_str());
       cnt++;
     }
   }
@@ -244,6 +252,16 @@ void Config::SetConfigValues() {
   mixedness_constraint_  = atoi(GetConfigValue("mixed_penalty", "0", "Enable/disable RoleEntropy.").c_str());
   mixedness_penalty_     = atoi(GetConfigValue("mixed_penalty_weight", "1", "Weight of RoleEntropy regularization.").c_str());
   mixedness_variance_    = atof(GetConfigValue("mixed_variance", "1.0", "RoleEntropy variance.").c_str());
+  mixedness_per_type_flags_ = new int[n_entity_types_];
+  fill(mixedness_per_type_flags_, mixedness_per_type_flags_ + n_entity_types_, mixedness_constraint_);
+  string mixedness_per_flag = GetConfigValue("mixed_penalty_per_flag", "", "RoleEntropy per attribute");
+  if (mixedness_per_flag.size())
+    SplitString(mixedness_per_flag, mixedness_per_type_flags_, n_entity_types_, 1);
+  mixedness_variance_per_type_ = new double[n_entity_types_];
+  fill(mixedness_variance_per_type_, mixedness_variance_per_type_ + n_entity_types_, mixedness_variance_);
+  string mixedness_variances = GetConfigValue("mixed_variance_per_flag", "", "RoleEntropy variance per attribute");
+  if (mixedness_variances.size())
+    SplitIntoArray(mixedness_variances, ',', mixedness_variance_per_type_, "double");
 
   balance_constraint_    = atoi(GetConfigValue("balance_penalty", "0", "Enable/disable BalanceEntropy.").c_str());
   balance_penalty_       = atoi(GetConfigValue("balance_penalty_weight", "1", "Weight of BalanceEntropy regularization.").c_str());
@@ -292,6 +310,8 @@ void Config::SetConfigValues() {
   clamp_rigidity_        = atof(GetConfigValue("clamp_rigidity", "0.8", "Rigidity of belief in clamped node labels.").c_str());
   node_label_file_       = GetConfigValue("node_label_file", "", "Input node labels.");
   use_node_labels_       = (node_label_file_ != "");
+  doc_label_file_        = GetConfigValue("doc_label_file", "", "Input doc labels.");
+  use_doc_labels_        = (doc_label_file_ != "");
   md_seeds_              = (md_n_domains_ > 0 && use_node_labels_);
 
   input_topic_file_      = GetConfigValue("input_model_file", "", "Input model file to start from instead of a random point.");
@@ -306,6 +326,17 @@ void Config::SetConfigValues() {
   
   check_integrity_       = (GetConfigValue("check_integrity", "NO", "For debugging: see if all data structures are healthy.") == "YES");
   fast_lda_              = (GetConfigValue("fast_lda", "NO", "Use fast LDA for faster inference in networks") == "YES");
+  metropolis_hastings_   = (GetConfigValue("metropolis_hastings", "NO", "Use Metropolis Hastings and change prior to ECD") == "YES");
+  metropolis_reject_     = (GetConfigValue("metropolis_reject", "NO", "Actually reject when using Metropolis Hastings") == "YES");
+  metro_trace_           = (GetConfigValue("metropolis_trace", "NO", "Debug info for MH") == "YES");
+
+  train_docs_label_file_       = GetConfigValue("train_docs_label_file", "", "Known doc cluster label file for evaluation.");
+  def = (train_docs_label_file_ == "") ? "YES" : "NO";
+  docs_hungarian_flag_         = (GetConfigValue("disable_docs_hungarian",       def, "Disable docs Hungarian evaluation.") != "YES");
+  docs_nmi_flag_         = (GetConfigValue("disable_docs_nmi",       def, "Disable docs Hungarian evaluation.") != "YES");
+  docs_knn_flag_         = (GetConfigValue("disable_docs_knn",       def, "Disable docs Hungarian evaluation.") != "YES");
+
+  flipped_model_         = (GetConfigValue("flipped_model", "NO", "Use flipped model") == "YES");
 }
 
 void Config::CheckOptions() {

@@ -4,6 +4,7 @@
 #include <fstream>
 #include <string>
 #include <vector>
+#include <ext/hash_map>
 
 #include <dlib/svm.h>
 
@@ -11,6 +12,43 @@ class Config;
 class Links;
 class Corpus;
 class Stats;
+
+struct Log2 {
+  __gnu_cxx::hash_map<int, double> cache_;
+  double log2;
+  long int cache_hits_;
+  long int total_hits_;
+  __gnu_cxx::hash_map<int,double>::iterator it_;
+  Log2() {
+    log2 = log(2.0);
+    cache_hits_ = 0;
+    total_hits_ = 0;
+  }
+  double operator()(int i) {
+    if ((it_ =cache_.find(i)) == cache_.end()) {
+      double val = log(i) / log2;
+      cache_.insert(make_pair(i, val));
+      total_hits_++;
+      return val;
+    } else {
+      cache_hits_++;
+      total_hits_++;
+      return it_->second;
+    }
+  }
+  double CacheHitRate() {
+    return cache_hits_ * 1.0 / total_hits_;
+    cache_hits_ = 0;
+    total_hits_ = 0;
+  }
+};
+
+struct MHStats {
+  int gt1_;
+  int accept_;
+  int reject_;
+  MHStats(int g, int a, int r) : gt1_(g), accept_(a), reject_(r) {}
+};
 
 class Model {
  public:
@@ -50,11 +88,13 @@ class Model {
 
   double *perplexities_;             // recording final results
   double link_perplexity_;      
+  Log2 log2_;
 
   void TrainRegression(Corpus &corpus);
   void PredictTargets(Corpus &corpus, int doc);
   void PredictTargetsFromTheta(Corpus &corpus);
   long double GetTargetProbability(Corpus &corpus, int doc, int topic, int weight);
+  pair<double, pair<double, double> > MetropolisTest(Corpus &c, int doc, int type, int word_idx, int cur_topic, int new_topic);
 
   Model* MCMC(Corpus &corpus,      Links *links, 
               Corpus *test_corpus, Links *test_link_corpus,
@@ -127,10 +167,12 @@ class Model {
   double JSD(int type, int p, int q);
 
   int **input_labels_;
+
  private:
   int freed_;
   double ***input_topics_;
 
+  ofstream metro_log_stream_;
   std::vector<double> labels_;
 
   int **true_labels_;

@@ -5,7 +5,9 @@
 
 #include "config.h"
 #include "corpus.h"
+#include "hungarian.h"
 #include "model.h"
+#include "stats.h"
 #include "util.h"
 
 void Corpus::AddWord(int doc, int cur_topic, int type, bool remove) {
@@ -134,6 +136,10 @@ void Corpus::RandomInit(int **node_labels) {
   } // end if
 }
 
+int Corpus::GetMostLikelyTopic(int doc) {
+  return std::max_element(counts_docs_topics_[doc], counts_docs_topics_[doc] + config_->n_topics_) - counts_docs_topics_[doc];
+}
+
 double Corpus::GetTopicProbability(int doc, int topic, int type) {
   double prob = counts_docs_topics_[doc][topic] + config_->alpha_;
   if (config_->theta_constraint_) {
@@ -215,9 +221,12 @@ void Corpus::InitializeThetaEntropy() {
 }
 
 Corpus::Corpus(const Config *c, int n, const string &file) : config_(c), n_docs_(n) {
+  corpus_labels_ = NULL;
+  doc_labels_   = NULL;
   averager_count_ = 0;
   if (n_docs_ <= 0)
       return;
+  // cout << "Reading in " << n_docs_ << " test docs" << endl;
   Setup(file);
   if (config_->md_n_domains_) 
     MakeDomainSampler();
@@ -319,12 +328,12 @@ void Corpus::Allocate() {
   }
 
   if (config_->md_n_domains_) {
-    domains_ = new int[config_->n_docs_];
+    domains_ = new int[n_docs_];
     Component<int>::config_ = config_;
     SplComponent<int>::config_ = config_;
-    md_entropy_components_ = new Component<int>**[config_->n_docs_];
+    md_entropy_components_ = new Component<int>**[n_docs_];
     if (config_->md_seeds_) 
-      md_senti_entropy_components_ = new SplComponent<int>*[config_->n_docs_];
+      md_senti_entropy_components_ = new SplComponent<int>*[n_docs_];
     for (int i = 0; i < n_docs_; ++i) {
       md_entropy_components_[i] = new Component<int>*[2];
       md_entropy_components_[i][0] = new Component<int>(config_, counts_docs_topics_, i, 0);
@@ -477,6 +486,14 @@ void Corpus::Free() {
     if (config_->md_seeds_)
       delete[] md_senti_entropy_components_;
   }
+  if (corpus_labels_)
+    delete[] corpus_labels_;
+  corpus_labels_ = NULL;
+
+  if (doc_labels_)
+    delete[] doc_labels_;
+  doc_labels_ = NULL;
+
   delete[] weight_;
   delete[] counts_docs_topics_;
   delete[] theta_;
@@ -532,6 +549,10 @@ void Corpus::Setup(const string &file) {
   }
   Read(ifs);
   ifs.close();
+
+  cout << "Reading doc labels " << endl;
+  ReadDocLabels(config_->doc_label_file_, doc_labels_);
+  cout << "...done reading labels " << endl;
 }
 
 void Corpus::CheckIntegrity() {
@@ -634,3 +655,323 @@ void Corpus::CalculateRealTargetMSE(string prefix, Stats *stats) {
     stats->Save(oss3.str(), counts[target]);
   }
 }
+
+void Corpus::ReadDocLabels(const string &label_file, int* &labels) {
+  if (labels)
+    return;
+
+  labels = new int[n_docs_];
+  fill(labels, labels + n_docs_, -1);
+
+  ifstream ifs(label_file.c_str());
+  if (!ifs) {
+    cout << "Cannot open doc label file " << label_file << endl;
+    labels = NULL;
+    return;
+  } else {
+    cout << "Reading doc labels from " << label_file << endl;
+  }
+
+  string line;
+  int ctr = 0;
+  while (getline(ifs, line)) {
+    istringstream iss(line);
+    int id, label;
+    iss >> id >> label;
+    if (id >= 0 && id < n_docs_ && label >= 0) {
+      labels[id] = label;
+    } else {
+      cout << "Discarding doc label " << label << " for docid " << id << endl;
+    }
+    ctr++;
+  } // end while - reading in file.
+  ifs.close();
+  cout << "Read " << ctr << " document labels" << endl;
+}
+
+double Corpus::GetAccuracyFromHungarian() {
+  double accuracy = -1.0;
+
+  if (corpus_labels_ == NULL) {
+    if (config_->train_docs_label_file_ == "") {
+      cout << "No true label file provided so exiting hungarian accuracy module" << endl;
+      return accuracy;
+    }
+    ReadDocLabels(config_->train_docs_label_file_, corpus_labels_);
+    if (!corpus_labels_) {
+      cout << "Invalid true label file" << endl;
+      return accuracy;
+    }
+  }
+
+  hungarian_problem_t problem;
+  int n_true_classes = GetNumTrueDocClasses();
+  int **cost_matrix = new int*[n_true_classes]; 
+  cout << "True Classes " << n_true_classes << endl;
+  for (int t = 0; t < n_true_classes; ++t)  {
+    cost_matrix[t] = new int[config_->n_topics_];
+    for (int c = 0; c < config_->n_topics_; ++c)
+      cost_matrix[t][c] = 0;
+  } // end for
+
+  for (int i = 0; i < n_docs_; ++i) {
+    int pred_label = GetMostLikelyTopic(i);
+    int true_label = corpus_labels_[i];
+    if (true_label == -1) 
+        continue;
+
+    for (int c = 0; c < config_->n_topics_; ++c) {
+      // For the true class, add a penalty to match it with any topic that's not the pred label.
+      if (c != true_label) 
+        cost_matrix[pred_label][c]++;
+    }
+  } // end doc
+
+  hungarian_init(&problem, cost_matrix, n_true_classes, config_->n_topics_, HUNGARIAN_MODE_MINIMIZE_COST);
+  // hungarian_print_costmatrix(&problem);
+  hungarian_solve(&problem);
+  // hungarian_print_assignment(&problem);
+
+  // get assignment
+  vector<int> matched_class(n_true_classes);
+  for (int i = 0; i < n_true_classes; ++i) {
+    bool done = false;
+    for (int j = 0; j < config_->n_topics_; ++j) {
+      if (problem.assignment[i][j] == 1) {
+        matched_class[i] = j;
+        done = true;
+  //      cout << "Node " << i << " == Class " << j << endl;
+        break;
+      } // end if
+    } // end class
+    if (!done)
+        cout << "Node " << i << " unmatche " << endl;
+  } // end class
+
+  hungarian_free(&problem);
+
+  // get predicted labels and compare
+  int total = 0;
+  int correct = 0;
+
+  for (int i = 0; i < n_docs_; ++i) {
+    int pred_topic = GetMostLikelyTopic(i);
+    int true_label = corpus_labels_[i];
+
+    int pred_label = matched_class[pred_topic];
+    if (pred_label == true_label)
+      correct++;
+    total++;
+  } // end word
+  accuracy = correct * 1.0 / total;
+
+  for (int i = 0; i < n_true_classes; ++i)
+    delete[] cost_matrix[i];
+  delete[] cost_matrix; 
+  return accuracy;
+}
+
+double Corpus::GetKNN() {
+}
+
+double Corpus::GetNMI() {
+  double nmi = -1.0;
+
+  if (corpus_labels_ == NULL) {
+    if (config_->train_docs_label_file_ == "") {
+      cout << "No true doc label file provided so exiting hungarian accuracy module" << endl;
+      return nmi;
+    }
+    ReadDocLabels(config_->train_docs_label_file_, corpus_labels_);
+    cout << "Boom!" << endl;
+  }
+
+  int n_true_classes    = GetNumTrueDocClasses();
+  double *pred_distr       = new double[config_->n_topics_];
+  double *true_distr       = new double[n_true_classes];
+  double **contingency     = new double*[config_->n_topics_]; 
+  for (int t = 0; t < config_->n_topics_; ++t) {
+    contingency[t]     = new double[n_true_classes];
+  }
+
+  for (int t = 0; t < config_->n_topics_; ++t)  {
+    pred_distr[t] = 0;
+    for (int c = 0; c < n_true_classes; ++c) {
+      contingency[t][c] = 0;
+      if (t == 0)
+        true_distr[c] = 0;
+    } // end classes
+  } // end topics
+///
+  double sum_pred_distr = 0.0;
+  for (int i = 0; i < n_docs_; ++i) {
+    int true_label = corpus_labels_[i];
+    if (true_label == -1)
+      continue;
+
+    double norm = accumulate(counts_docs_topics_[i], counts_docs_topics_[i] + config_->n_topics_, 0.0) * 1.0;
+    for (int topic = 0; topic < config_->n_topics_; ++topic) {
+      pred_distr[topic] += counts_docs_topics_[i][topic] * 1.0 / norm;
+      contingency[topic][true_label] += counts_docs_topics_[i][topic] / norm;
+    }
+    sum_pred_distr++;
+
+    if (true_label >= n_true_classes) {
+      cout << "Weird true class " << true_label << " for doc " << i << endl;
+    }
+    true_distr[true_label]++;
+  } // end docs
+
+  
+  double h_cond = 0.0;
+  for (int i = 0; i < config_->n_topics_; ++i) {
+    if (pred_distr[i] > 0)
+      h_cond += (pred_distr[i] * GetEntropy(contingency[i], n_true_classes));
+    //cout << endl;
+    //for (int c = 0; c < n_true_classes; ++c)
+    //  cout << contingency[i][c] << ' ';
+    //cout << endl;
+  } // end class
+  h_cond /= sum_pred_distr;
+  double h_true = GetEntropy(true_distr, n_true_classes);
+  double h_pred = GetEntropy(pred_distr, config_->n_topics_);
+  nmi = 2 * (h_true - h_cond) / (h_true + h_pred);
+
+  for (int i = 0; i < config_->n_topics_; ++i) {
+    delete[] contingency[i];
+  }
+  delete[] contingency; 
+  delete[] pred_distr;
+  delete[] true_distr;
+  cout << "NMI done " << endl;
+  return nmi;
+}
+
+double Corpus::GetEntropy(double *distr, int n) {
+  double h = 0.0;
+  double sum = accumulate(distr, distr + n, 0.0) * 1.0;
+  for (int i = 0; i < n; ++i) {
+    if (distr[i] > 0)
+      h -= (distr[i] / sum) * log2(distr[i] / sum);
+  } // end for
+  return h;
+}
+
+int Corpus::GetNumTrueDocClasses() {
+  return *(std::max_element(corpus_labels_, corpus_labels_ + n_docs_)) + 1;
+}
+
+/*class Comparer {
+ public:
+   double *ref_;
+   Comparer(double *ref):ref_(ref) {}
+   bool operator()(int a, int b) {
+     return ref_[a] < ref_[b];
+   }
+};
+
+vector<vector<double> > Model::GetKNN() {
+  vector<vector<double> > accuracies;
+  int K[] = {1, 3, 5};
+  int correct_cnt_big[] = {0, 0, 0};
+  int total_big = 0;
+
+  for (int type = 0; type < config_.n_entity_types_; ++type) {
+    // if we're using mixedness constraint, frequencies are already computed.
+    if (!config_.mixedness_constraint_) {
+      for (int j = 0; j < config_.vocab_size_[type]; ++j) {
+        frequencies_[type][j] = 0.0;
+        for (int t = 0; t < config_.n_topics_; ++t) {
+          frequencies_[type][j] += counts_topic_words_[type][t][j];
+        } // end topic
+      } // end word
+    } // end if
+
+    int correct_cnt[3] = {0, 0, 0};
+
+    vector<int> idx(config_.vocab_size_[type]);
+    for (int i = 0; i < config_.vocab_size_[type]; ++i)
+      idx[i] = i;
+
+    double **distances = new double*[config_.vocab_size_[type]];
+    for (int i = 0; i < config_.vocab_size_[type]; ++i)
+      distances[i] = new double[config_.vocab_size_[type]];
+
+    int skipped = 0;
+    for (int i = 0; i < config_.vocab_size_[type]; ++i) {
+      distances[i][i] = 1000000000;
+      for (int j = i + 1; j < config_.vocab_size_[type]; ++j) {
+        distances[i][j] = JSD(type, i, j);
+        distances[j][i] = distances[i][j];
+      } // end word 2 
+      if (true_labels_[type][i] == -1) {
+        skipped++;
+        continue;
+      }
+
+      vector<int> myidx = idx;
+      sort(myidx.begin(), myidx.end(), Comparer(distances[i]));
+
+      for (int h = 0; h < 3; ++h) {
+        map<int, int> counts;
+        int k = 0;
+        int ctr = 0;
+        while (k < K[h]) {
+          if (true_labels_[type][myidx[ctr]] != -1) {
+            counts[true_labels_[type][myidx[ctr]]]++;
+            ++k;
+          }
+          ++ctr;
+        }
+        int winning_label = (std::max_element(counts.begin(), counts.end()))->first;
+        
+        bool correct = (true_labels_[type][i] == winning_label);
+        correct_cnt[h] += correct;
+      } // end for
+    } // end word 1
+    vector<double> type_acc;
+    for (int h = 0; h < 3; ++h) {
+      double acc = correct_cnt[h] * 1.0 / (config_.vocab_size_[type] - skipped);
+      type_acc.push_back(acc);
+      correct_cnt_big[h] += correct_cnt[h] * config_.entity_weight_[type];
+    }
+    accuracies.push_back(type_acc);
+    total_big += (config_.vocab_size_[type] - skipped) * config_.entity_weight_[type];
+
+    for (int i = 0; i < config_.vocab_size_[type]; ++i)
+      delete[] distances[i];
+    delete[] distances;
+  } // end type
+  vector<double> big_acc;
+  for (int h = 0; h < 3; ++h) {
+    double acc = correct_cnt_big[h] * 1.0 / total_big;
+    big_acc.push_back(acc);
+  }
+  accuracies.push_back(big_acc);
+  return accuracies;
+}*/
+
+void Corpus::CalculateAccuracy(Stats *stats) {
+  if (config_->docs_nmi_flag_) {
+    double nmi = GetNMI();
+    ostringstream oss_p;
+    oss_p << " DocNMI:" << setprecision(4) << nmi;
+    if (stats) {
+      stats->Save("doc_label_prediction_nmi", nmi);
+    }
+    if (!stats)
+      cout << "  " << oss_p.str();
+  } // end if
+  if (config_->docs_hungarian_flag_) {
+    double acc = GetAccuracyFromHungarian();
+    ostringstream oss_p;
+    oss_p << " DocHungarianAcc:" << setprecision(4) << acc;
+    if (stats) {
+      stats->Save("doc_label_prediction_accuracy", acc);
+    }
+    if (!stats)
+      cout << "  " << oss_p.str();
+  } // end if
+}
+
+

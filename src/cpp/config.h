@@ -46,6 +46,8 @@ class Config {
   bool   mixedness_constraint_; 
   double mixedness_variance_;
   double mixedness_penalty_;
+  int*   mixedness_per_type_flags_;
+  double* mixedness_variance_per_type_;
   bool   balance_constraint_; 
   double balance_variance_;
   double balance_penalty_;
@@ -112,19 +114,27 @@ class Config {
   int n_sample_iterations_;
   int n_avg_;
 
+  bool flipped_model_;
   double node_label_randomness_; // while initializing with given node labels
   double clamp_rigidity_;        // if node labels are given, how much clamping
                                  // are we to allow during Gibbs
   bool use_node_labels_;
   string node_label_file_;
+  bool use_doc_labels_;
+  string doc_label_file_;
   string input_topic_file_;
   bool use_input_topics_;
   bool use_fake_input_topics_;  // if fake_input_topics is set, pi and theta is
                                 // sampled before MCMC with random topics to
                                 // enable comparison with input topics without
                                 // handicap of fewer sampling iterations
-  string true_label_file_;                                
+  string train_docs_label_file_;
+  bool docs_hungarian_flag_;
+  bool docs_nmi_flag_;
+  bool docs_knn_flag_;
 
+
+  string true_label_file_;                                
   bool hungarian_flag_;
   bool nmi_flag_;
   bool knn_flag_;
@@ -140,6 +150,9 @@ class Config {
   vector<string> order_;
 
   bool fast_lda_;
+  bool metropolis_hastings_;
+  bool metropolis_reject_;
+  bool metro_trace_;
 };
 
 #endif

@@ -112,6 +112,7 @@ int main(int argc, char **argv) {
         cout << "Sampling with average model" << endl;
         average_model->SampleTopics(corpus);
         corpus.Save(prefix + ".train");
+        corpus.CalculateAccuracy(&stats);
         cout << "Done" << endl;
         stats.Save("train_doc_perplexity", average_model->perplexities_, config.n_entity_types_);
         stats.Save("train_avg_doc_theta_entropy", corpus.GetAverageTopicEntropy());

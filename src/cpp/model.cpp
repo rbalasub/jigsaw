@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cmath>
 #include <iomanip>
 #include <iostream>
@@ -379,10 +380,12 @@ void Model::GetRealAttributeProbabilities(Corpus &corpus, int doc, long double *
   } // end attr
 }
 
-long double Model::GetWordTopicProbability(int topic, int type, int cur_wordid) {
+long double Model::GetWordTopicProbability(int topic, int type, int wordid) {
   if (normalized_)  
-    return counts_topic_words_[type][topic][cur_wordid];
-  return (counts_topic_words_[type][topic][cur_wordid] + config_.beta_[type]) /
+    return counts_topic_words_[type][topic][wordid];
+  if (config_.flipped_model_)
+    return counts_topic_words_[type][topic][wordid] + config_.beta_[type];
+  return (counts_topic_words_[type][topic][wordid] + config_.beta_[type]) /
          (sum_counts_topic_words_[type][topic] + config_.vocab_size_[type] * config_.beta_[type]);
 }
 
@@ -532,13 +535,17 @@ Model *  Model::MCMC(Corpus &corpus,
                      Links  *test_link_corpus,
                      bool debug) {
 
+  cout << corpus.doc_labels_ << " is address of doc_labels" << endl;
   if (config_.fast_lda_)
     cout << "Using fast LDA for networks" << endl;
   if (corpus.n_docs_)
     AddCorpus(corpus);
   if (links && links->n_links_)
     AddLinks(*links);
-
+  if (config_.metro_trace_ && !metro_log_stream_.is_open()) {
+    metro_log_stream_.open((config_.output_prefix_ + ".metrotrace").c_str(), ios_base::out);
+    cout << "Opening metro log file\n" << endl;
+  }
   double      *perplexity                 = new      double[config_.n_entity_types_];
   long double *time_prob                  = new long double[config_.n_topics_];
   long double *cdf                        = new long double[config_.n_topics_];
@@ -576,6 +583,8 @@ Model *  Model::MCMC(Corpus &corpus,
   }
   cout << endl;
 
+  vector<MHStats> mh_stats;
+
   for (int iteration = 0; iteration < config_.n_iterations_ + config_.n_avg_; ++iteration) {
     cout << "Iteration " << iteration << " ...  "; cout.flush();
     cout << "Avg Node Role Entropy: "; cout.flush();
@@ -591,7 +600,16 @@ Model *  Model::MCMC(Corpus &corpus,
     int labeled_word_cnt = 0;
     int general_cnt = 0;
     int ood_cnt = 0;
+
+    int labeled_docs_cnt = 0;
+
+    int mh_accept_gt1 = 0;
+    int mh_accept = 0;
+    int mh_reject = 0;
+    bool mh_dumped = 0;
+
     for (int doc = 0; doc < corpus.n_docs_; ++doc) {
+      bool doc_already_labeled = false;
       /*
       if (config_.md_n_domains_) {
         set<int **> jazz;
@@ -612,11 +630,29 @@ Model *  Model::MCMC(Corpus &corpus,
              word_idx < corpus.doc_num_words_[type][doc];
              ++word_idx) {
 
+          if (doc == 0 && type == 0 && word_idx == 0)
+            mh_dumped = 0;
           RemoveWord(corpus, doc, word_idx, type);
 
           int cur_wordid = corpus.corpus_words_[type][doc][word_idx];
 
           int new_topic = -1;
+
+          // doc labels
+          if (config_.use_doc_labels_ &&
+              config_.clamp_rigidity_ > 0.01 &&
+              corpus.doc_labels_[doc] != -1 && 
+              Random() < config_.clamp_rigidity_) {
+            if (!doc_already_labeled) {
+              labeled_docs_cnt++;
+              doc_already_labeled = true;
+            }
+            new_topic = corpus.doc_labels_[doc];
+            if (new_topic > config_.n_topics_)
+              cout << "Woah\n" << endl;
+          }
+
+          // word labels
           if (config_.use_node_labels_ &&
               config_.clamp_rigidity_ > 0.01 &&
               input_labels_[type][cur_wordid] != -1 && 
@@ -683,9 +719,42 @@ Model *  Model::MCMC(Corpus &corpus,
             new_topic = cur_topic;
           }
 
+          if (config_.metropolis_hastings_ && new_topic ==  cur_topic) {
+            mh_accept_gt1++;
+            if (config_.metro_trace_)
+              metro_log_stream_ << "Trace\t" << cur_wordid << "\t" << new_topic << "\t" << new_topic << "\t1\t1\t1\t1\t1\t1\t-2\t1" << endl;
+          }
+          if (config_.metropolis_hastings_ && new_topic !=  cur_topic) {
+            pair<double, pair<double, double> > mh_prob_pair;
+
+            mh_prob_pair = MetropolisTest(corpus, doc, type, cur_wordid, cur_topic, new_topic);
+            double mh_prob = mh_prob_pair.first;
+            double r = -1;
+            bool accepted = true;
+            if (mh_prob > 1.0) {
+              mh_accept_gt1++;
+            } else if ((r = Random()) < mh_prob) {
+              mh_accept++;
+            } else {
+              accepted = false;
+              mh_reject++;
+              if (config_.metropolis_reject_) {
+                new_topic = cur_topic;
+              } // end if actual rejection
+            } // end if rejected
+            if (config_.metro_trace_)
+              metro_log_stream_ << r << "\t" << accepted << endl;
+
+            if (!mh_dumped) {
+              cout << "Avg Beta Entropy: " << mh_prob_pair.second.first << ", " << mh_prob_pair.second.second << endl;
+              mh_dumped = 1;
+            }
+          } // end metropolis hastings
+
           // add this word
           corpus.word_topic_assignments_[type][doc][word_idx] = new_topic;
           AddWord(corpus, doc, word_idx, type);
+
           
           if (debug)
             DebugMCMC(corpus, cdf, cur_topic, new_topic, iteration, doc, word_idx);
@@ -695,6 +764,11 @@ Model *  Model::MCMC(Corpus &corpus,
           //cout << corpus.md_senti_entropy_components_[doc]->counts_ << endl;
         } // end words
       } // end types of words
+      if (config_.metropolis_hastings_) {
+        //if (doc % 10 == 0) {
+          cout << '+'; cout.flush();
+        //}
+      }
     } //  end docs
 
     // Run Link MCMC
@@ -760,6 +834,7 @@ Model *  Model::MCMC(Corpus &corpus,
         cout << " Link: " << link_perplexity;
       }
       CalculateAccuracy();
+      corpus.CalculateAccuracy();
     } // end if - test perlexity
     if (config_.volume_constraint_)
       cout << " VolumeEntropy: " << GetVolumeEntropy();
@@ -767,9 +842,38 @@ Model *  Model::MCMC(Corpus &corpus,
       cout << " Used supplied labels for " << labeled_word_cnt;
       cout << " Out of " << labeled_word_cnt << " (" << general_cnt << "," << ood_cnt <<") " << endl;
     }
+    if (labeled_docs_cnt) {
+      cout << " Used doc labels for " << labeled_docs_cnt << " docs " << endl;
+    }
+
+    if (config_.metropolis_hastings_) {
+      MHStats m(mh_accept_gt1, mh_accept, mh_reject);
+      mh_stats.push_back(m);
+      cout << "MH accept: " << (mh_accept_gt1 + mh_accept) * 100.0 / (mh_accept_gt1 + mh_accept + mh_reject) << " ";
+      cout << "above-1:" << mh_accept_gt1 * 100.0 / (mh_accept_gt1 + mh_accept + mh_reject) << " ";
+      cout << "reject: " << mh_reject * 100.0 / (mh_accept_gt1 + mh_accept + mh_reject) << " ";
+      cout << "dbg-total: " << (mh_accept_gt1 + mh_accept + mh_reject) << " ";
+      cout << "CacheHitRate: " << log2_.CacheHitRate() * 100 << "% out of " << log2_.total_hits_ << " hits; " << log2_.total_hits_ - log2_.cache_hits_ << " misses;  size of cache: " << log2_.cache_.size();
+    }
     cout << endl;
   } // end iterations
   delete[] cdf;
+
+  if (config_.metropolis_hastings_) {
+    int gt1 = 0;
+    int accept = 0;
+    int reject = 0;
+    for (vector<MHStats>::iterator it = mh_stats.begin(); it != mh_stats.end(); ++it) {
+      gt1 += it->gt1_;
+      accept += it->accept_;
+      reject += it->reject_;
+    }
+    cout << "CacheHitRate: " << log2_.CacheHitRate() << endl;
+    cout << "Overall MH -- >1:" << gt1 * 100.0 / (gt1 + accept + reject) << " ";
+    cout << "accept: " << (gt1 + accept) * 100.0 / (gt1 + accept + reject) << " ";
+    cout << "reject: " << (reject) * 100.0 / (gt1 + accept + reject);
+    cout << endl;
+  }
 
   cout << "Average model " << "...  : ";
   if (corpus.n_docs_) {
@@ -793,6 +897,162 @@ Model *  Model::MCMC(Corpus &corpus,
   delete[] perplexity;
   cout << "Done with MCMC\n";
   return average_model;
+}
+
+pair<double, pair<double, double> > Model::MetropolisTest(Corpus &c, int doc, int type, int word_id, int cur_topic, int new_topic) {
+  double term1 = 1.0;
+  //    (c.counts_docs_topics_[doc][new_topic] + config_.alpha_) * 1.0 /
+  //    (c.counts_docs_topics_[doc][cur_topic] + config_.lit_weight_ - 1 + config_.alpha_);
+  double n_k_old = sum_counts_topic_words_[type][cur_topic] + config_.lit_weight_; 
+  double n_k_new = sum_counts_topic_words_[type][new_topic]; 
+ 
+  int gamma = static_cast<int>(ceil(config_.beta_[type] * 10));
+  double gamma_real = config_.beta_[type];
+  double V = config_.vocab_size_[type];
+ 
+
+
+  double n_kv_old = counts_topic_words_[type][cur_topic][word_id] + config_.lit_weight_; 
+  double n_kv_new = counts_topic_words_[type][new_topic][word_id]; 
+ 
+  double pt1_top    = (n_kv_old - 1 + gamma_real) / (n_k_old - 1 + V * gamma_real);
+  double pt1_bottom = (n_kv_old     + gamma_real) / (n_k_old     + V * gamma_real);
+ 
+  double pt2_top    = (n_kv_new + 1 + gamma_real) / (n_k_new + 1 + V * gamma_real);
+  double pt2_bottom = (n_kv_new     + gamma_real) / (n_k_new     + V * gamma_real);
+
+  // double term2_pt1  = pow(pt1_top / pt1_bottom, n_kv_old - 1);
+  // double term2_pt2  = pow(pt2_top/ pt2_bottom, n_kv_new); 
+  // double term2 = term2_pt1 * term2_pt2 * pt2_top / pt1_bottom;
+ 
+  double term2_pt1  = pow(pt1_top / pt1_bottom, (n_kv_old + gamma_real - 1));
+  double term2_pt2  = pow(pt2_top / pt2_bottom, (n_kv_new + gamma_real    )); 
+  double term2 = term2_pt1 * term2_pt2; 
+ 
+  double numerator = 0.0;
+  double dbg_avg_new_entropy = 0.0;
+  double dbg_avg_old_entropy = 0.0;
+
+  double max_entropy = -1;
+ 
+  double term5 = 1.0;
+  for (int v = 0; v < config_.vocab_size_[type]; ++v) {
+    if (v != word_id) {
+      double n_kv_old = counts_topic_words_[type][cur_topic][v]; 
+      double n_kv_new = counts_topic_words_[type][new_topic][v]; 
+     
+      double pt1_top    = (n_kv_old + gamma_real) / (n_k_old - 1 + V * gamma_real);
+      double pt1_bottom = (n_kv_old + gamma_real) / (n_k_old     + V * gamma_real);
+     
+      double pt2_top    = (n_kv_new + gamma_real) / (n_k_new + 1 + V * gamma_real);
+      double pt2_bottom = (n_kv_new + gamma_real) / (n_k_new     + V * gamma_real);
+
+      double term2_pt1  = pow(pt1_top / pt1_bottom, n_kv_old + gamma_real - 1);
+      double term2_pt2  = pow(pt2_top / pt2_bottom, n_kv_new + gamma_real - 1); 
+      term5 *= term2_pt1 * term2_pt2;
+    }
+
+
+    double old_entropy = 0.0;
+    double new_entropy = 0.0;
+    double new_sum = 0.0;
+    double old_sum = 0.0;
+    for (int k = 0; k < config_.n_topics_; ++k) {
+      // these are un-row-normalized i.e. regular betas.
+      int x = static_cast<int>(10 * counts_topic_words_[type][k][v] + gamma);
+      int dx = static_cast<int>(10 * sum_counts_topic_words_[type][k] + V * gamma);
+      
+      int a = x;
+      if (v == word_id && k == new_topic)
+        a = x + 10;
+      int da = dx;
+      if (k == new_topic)
+        da = da + 10;
+      new_sum += a * 1.0 / da;
+      new_entropy -= (a * 1.0 / da) * (log2_(a) - log2_(da));
+ 
+      int b = x;
+      if (v == word_id && k == cur_topic)
+        b = b + 10;
+      int db = dx;
+      if (k == cur_topic)
+        db = db + 10;
+      old_sum += b * 1.0 / db;
+      old_entropy -= (b * 1.0 / db) * (log2_(b) - log2_(db));
+ 
+      //cout << a * 1.0 / da << " ";
+    }
+    //cout << new_sum << endl;
+    new_entropy /= new_sum;
+    new_entropy += log(new_sum) / log(2.0);
+ 
+    old_entropy /= old_sum;
+    old_entropy += log(old_sum) / log(2.0);
+ 
+    dbg_avg_new_entropy += new_entropy;
+    dbg_avg_old_entropy += old_entropy;
+    if (old_entropy > max_entropy)
+      max_entropy = old_entropy;
+    numerator += (-1.0 * new_entropy * new_entropy + old_entropy * old_entropy);
+  }
+  double term3 = exp(numerator / (2 * config_.mixedness_variance_));
+ 
+  ///   q
+  // double q_old =
+  //     GetWordTopicProbability(cur_topic, type, word_id) *
+  //     c.GetTopicProbability(doc, cur_topic, type);
+
+  // double q_new =
+  //     GetWordTopicProbability(new_topic, type, word_id) *
+  //     c.GetTopicProbability(doc, new_topic, type);
+
+  // double term4 = q_old / q_new;
+
+  // as - is  old | new
+  // new      new | old    
+  double h_old = 0.0;
+  double h_new = 0.0;
+  int n = 0;
+  for (int k = 0; k < config_.n_topics_; ++k) {
+    int p_old = counts_topic_words_[type][k][word_id];
+    int p_new = counts_topic_words_[type][k][word_id];
+    if (k == cur_topic)
+      p_old += 1;
+    if (k == new_topic)
+      p_new += 1;
+    if (p_old)
+      h_old -= p_old * log2_(p_old);
+    if (p_new)
+      h_new -= p_new * log2_(p_new);
+
+    n += p_old;
+  }
+  
+  h_old /= n;
+  h_new /= n;
+  h_old += log2_(n);
+  h_new += log2_(n);
+  double term4 = 1.0; // exp((-1 * h_old * h_old + h_new * h_new) / (2 * config_.mixedness_variance_));
+
+  //  GetRoleEntropyProbability(type, cur_topic, word_id, config_.lit_weight_, false) / 
+  //  GetRoleEntropyProbability(type, new_topic, word_id, config_.lit_weight_, false);
+  ///   q
+
+
+  pair <double, pair<double, double> > ret;
+  ret.first = term1 * term2 * term5 * term3 * term4;
+  if (config_.metro_trace_)
+    metro_log_stream_ << "Trace\t" << word_id << "\t" << cur_topic << "\t" << new_topic << "\t" 
+                      << term1 << "\t" << term2 << "\t" << term3 << "\t" << term4 << "\t" << term5 << "\t"
+                      << ret.first << "\t";
+  ret.second.first = dbg_avg_new_entropy / V;
+  ret.second.second = max_entropy; //dbg_avg_old_entropy / V;
+  // cout << "Third term: " << term3 << " numerator: " << numerator << endl;
+  // cout << "avg_new: " << dbg_avg_new_entropy / V << " avg_old :" << dbg_avg_old_entropy / V << endl;
+  // cout << "Third-Numerator: " << numerator << endl;
+  // cout << "First:" << term1 << "   Second:" << term2 << " = " << term2_pt1 << " * " << term2_pt2 << "     Third:" << term3 << endl;
+  // cout << term1 * term2 * term3 << endl;
+  return ret;
 }
 
 void Model::AddLinks(Links &links, bool remove) {
@@ -1040,6 +1300,8 @@ long double Model::GetAverageNodeRoleEntropy(int type) {
 }
 
 long double Model::GetRoleEntropyProbability(int type, int topic, int id, double weight, bool unnorm = false) {
+  if (!config_.mixedness_per_type_flags_[type])
+    return 1.0;
   double num_occurences_of_cur_word = frequencies_[type][id];
 
   double p_candidate_topic_prev = counts_topic_words_[type][topic][id] / num_occurences_of_cur_word;
@@ -1053,7 +1315,7 @@ long double Model::GetRoleEntropyProbability(int type, int topic, int id, double
     return delta;
   we = we + delta;
 
-  double norm_prob = exp (-(we * we) / (2 * config_.mixedness_variance_));
+  double norm_prob = exp (-(we * we) / (2 * config_.mixedness_variance_per_type_[type]));
   return pow(norm_prob, config_.mixedness_penalty_);
 }
 

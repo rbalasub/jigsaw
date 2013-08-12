@@ -39,6 +39,8 @@ class Corpus {
   double *weight_;                // ndocs - weighted sum of doc
   int averager_count_;            // how many models is theta_ the average of
 
+  int *corpus_labels_;            // true cluster id of docs in corpus (used for eval only)
+  int *doc_labels_;               // true cluster id used for sampling assistance
   Component<int> ***md_entropy_components_; // ndocs X 2(my domain, general domain)
   SplComponent<int> **md_senti_entropy_components_; // ndocs(sentiment constraints)
   int *domains_;    //ndocs -- indicates domains to which the document belongs
@@ -50,6 +52,7 @@ class Corpus {
   void AddWord(int doc, int cur_topic, int type, bool remove);
 
   double GetTopicProbability(int doc, int topic, int type);
+  int GetMostLikelyTopic(int doc);
 
   double GetAverageTopicEntropy();
   void Allocate();
@@ -69,6 +72,13 @@ class Corpus {
 
   void CalculateRealTargetMSE(string prefix, Stats *stats);
 
+  void ReadDocLabels(const string&, int *&);
+  double GetAccuracyFromHungarian();
+  double GetNMI();
+  double GetKNN();
+  double GetEntropy(double *distr, int length);
+  int GetNumTrueDocClasses();
+  void CalculateAccuracy(Stats *stats = NULL);
 };
 
 #endif

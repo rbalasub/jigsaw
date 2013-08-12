@@ -227,6 +227,9 @@ class Model:
     if os.path.isfile(prefix + "_all_docs/page_0.html"):
       html.write("<H3>Docs</H3>")
       html.write("<A HREF=" + short_prefix + "_all_docs/page_0.html>All Docs</a><BR>")
+    if os.path.isfile(prefix + "_my_docs/page_0.html"):
+      html.write("<H3>My Docs</H3>")
+      html.write("<A HREF=" + short_prefix + "_my_docs/page_0.html>My Docs</a><BR>")
     for t in range(int(self.config["topics"])):
       if os.path.isfile(prefix + "_topic_" + str(t) + "_docs/page_0.html"):
         html.write("<A HREF=" + short_prefix + "_topic_" + str(t) + "_docs/page_0.html>Topic " + str(t) + "</a><BR>")
@@ -322,7 +325,7 @@ class Model:
     f = open(dir + 'sorted_subset', 'r')
     doc_idx = 0
 
-    palette = ["DarkGreen", "DarkKhaki", "DarkMagenta", "DarkOliveGreen", "Darkorange", "DarkOrchid", "DarkRed", "DarkSalmon", "DarkSeaGreen", "DarkSlateBlue", "DarkSlateGray", "DarkSlateGrey", "DarkTurquoise", "DarkViolet", "DeepPink", "DeepSkyBlue", "DimGray", "DimGrey", "DodgerBlue", "FireBrick", "FloralWhite", "ForestGreen", "Fuchsia"]
+    palette = ["DarkGreen", "DarkKhaki", "DarkMagenta", "DarkOliveGreen", "Darkorange", "DarkOrchid", "DarkRed", "DarkSalmon", "DarkSeaGreen", "DarkSlateBlue", "DarkSlateGray", "DarkSlateGrey", "DarkTurquoise", "DarkViolet", "DeepPink", "DeepSkyBlue", "DimGray", "DimGrey", "DodgerBlue", "FireBrick", "FloralWhite", "ForestGreen", "Fuchsia", "DarkKhaki", "DarkMagenta", "DarkOliveGreen", "Darkorange", "DarkOrchid", "DarkRed", "DarkSalmon", "DarkSeaGreen", "DarkSlateBlue", "DarkSlateGray", "DarkSlateGrey", "DarkTurquoise", "DarkViolet", "DeepPink", "DeepSkyBlue", "DimGray", "DimGrey", "DodgerBlue", "FireBrick", "FloralWhite", "ForestGreen", "Fuchsia"]
 
     for page in range(int(math.ceil(len(id_list) * 1.0 / self.per_page))):
       page_html = open(dir + "page_" + str(page) + ".html", 'w')
@@ -409,7 +412,7 @@ class Model:
       page_html.close()
     f.close()
 
-  def TopDocs(self, doc_file, doc_mode, per_page, upper_limit, output_prefix):
+  def TopDocs(self, doc_file, doc_mode, per_page, upper_limit, output_prefix, myrange_file=""):
     self.docs_file = doc_file
     self.docs_mode = doc_mode
     self.per_page = per_page
@@ -419,6 +422,20 @@ class Model:
     if self.config["model_targets"] == "YES":
       filename = self.config["output_prefix"] + ".run.0.train.doc_pred_targets"
       self.doc_pred_targets = self.ReadMatrix(filename)
+
+    if myrange_file != "":
+      my_range = []
+      mf = open(myrange_file)
+      for l in mf:
+        my_range.append(int(l.rstrip()))
+      mf.close()
+      sys.stdout.write("Generating doc distr for my range: " + str(len(my_range)) + " items\n")
+      dir = output_prefix + "_my_docs/"
+      if not os.path.exists(dir):
+        os.makedirs(dir)
+      self.GenerateDocPages("My docs", my_range, dir, "../" + os.path.basename(output_prefix) + "_index.html" )
+      return
+      
 
     full_range = range(min(upper_limit, len(self.doc_topic_distributions)))
     dir = output_prefix + "_all_docs/"
@@ -608,7 +625,7 @@ def MakeDir(output_prefix):
     os.makedirs(dir)
 
 def main():
-  opts, args = getopt.getopt(sys.argv[1:], 'x', ['report=', 'entity_names=', 'dict_prefix=', 'output_prefix=', 'wordle', 'topics', 'index', 'topdocs', 'docs_file=', 'docs_mode=', 'limit=', 'title=', 'per_page=', 'wordlist=', 'topicdistr', 'target_names=', 'latex', 'stopwords=', 'avg_node_role_entropy', 'no_sort_topics', 'domain_names='])
+  opts, args = getopt.getopt(sys.argv[1:], 'x', ['report=', 'entity_names=', 'dict_prefix=', 'output_prefix=', 'wordle', 'topics', 'index', 'topdocs', 'docs_file=', 'docs_mode=', 'limit=', 'title=', 'per_page=', 'wordlist=', 'topicdistr', 'target_names=', 'latex', 'stopwords=', 'avg_node_role_entropy', 'no_sort_topics', 'domain_names=', 'my_docs=', 'docdistr'])
 
   report = ''
   entity_names = ''
@@ -627,6 +644,8 @@ def main():
   wordlist = ''
 
   stopwordfile = ''
+
+  my_docs = ''
 
   action_flags = {} 
   for o, v in opts:
@@ -656,6 +675,8 @@ def main():
       domain_names = v
     elif o == '--stopwords':
       stopwordfile = v
+    elif o == '--my_docs':
+      my_docs = v
     else:
       action_flags[o] = 1
 
@@ -683,6 +704,9 @@ def main():
 
   if action_flags.get('--topdocs', 0) != 0:
     model.TopDocs(docs_file, docs_mode, per_page, limit, output_prefix)
+
+  if action_flags.get('--docdistr', 0) != 0:
+    model.TopDocs(docs_file, docs_mode, per_page, limit, output_prefix, my_docs)
 
   if action_flags.get('--topicdistr', 0) != 0:
     model.Wordlist(wordlist, output_prefix)
